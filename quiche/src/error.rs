@@ -233,7 +233,84 @@ impl Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Error::Done => write!(f, "there is no more work to do"),
+            Error::BufferTooShort =>
+                write!(f, "the provided buffer is too short"),
+            Error::UnknownVersion => write!(
+                f,
+                "the provided packet cannot be parsed because \
+                 its version is unknown"
+            ),
+            Error::InvalidFrame => write!(
+                f,
+                "the provided packet cannot be parsed because \
+                 it contains an invalid frame"
+            ),
+            Error::InvalidPacket =>
+                write!(f, "the provided packet cannot be parsed"),
+            Error::InvalidState => write!(
+                f,
+                "the operation cannot be completed because the \
+                 connection is in an invalid state"
+            ),
+            Error::InvalidStreamState(id) =>
+                write!(f, "stream {id} is in an invalid state"),
+            Error::InvalidTransportParam => write!(
+                f,
+                "the peer's transport params cannot be parsed"
+            ),
+            Error::CryptoFail =>
+                write!(f, "a cryptographic operation failed"),
+            Error::TlsFail =>
+                write!(f, "the TLS handshake failed"),
+            Error::FlowControl => write!(
+                f,
+                "the peer violated the local flow control limits"
+            ),
+            Error::StreamLimit =>
+                write!(f, "the peer violated the local stream limits"),
+            Error::StreamStopped(code) => write!(
+                f,
+                "the stream was stopped by the peer \
+                 (error code {code})"
+            ),
+            Error::StreamReset(code) => write!(
+                f,
+                "the stream was reset by the peer \
+                 (error code {code})"
+            ),
+            Error::FinalSize => write!(
+                f,
+                "the received data exceeds the stream's final size"
+            ),
+            Error::CongestionControl =>
+                write!(f, "error in congestion control"),
+            Error::IdLimit =>
+                write!(f, "too many identifiers were provided"),
+            Error::OutOfIdentifiers =>
+                write!(f, "not enough available identifiers"),
+            Error::KeyUpdate => write!(f, "error in key update"),
+            Error::CryptoBufferExceeded => write!(
+                f,
+                "the peer sent more data in CRYPTO frames than \
+                 we can buffer"
+            ),
+            Error::InvalidAckRange => write!(
+                f,
+                "the peer sent an ACK frame with an invalid range"
+            ),
+            Error::OptimisticAckDetected => write!(
+                f,
+                "the peer sent an ACK for a skipped packet used \
+                 for optimistic ACK mitigation"
+            ),
+            Error::InvalidDcidInitialization => write!(
+                f,
+                "an invalid DCID was used when connecting to a \
+                 remote peer"
+            ),
+        }
     }
 }
 
@@ -246,6 +323,115 @@ impl std::error::Error for Error {
 impl From<octets::BufferTooShortError> for Error {
     fn from(_err: octets::BufferTooShortError) -> Self {
         Error::BufferTooShort
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_display() {
+        assert_eq!(
+            Error::Done.to_string(),
+            "there is no more work to do"
+        );
+        assert_eq!(
+            Error::BufferTooShort.to_string(),
+            "the provided buffer is too short"
+        );
+        assert_eq!(
+            Error::UnknownVersion.to_string(),
+            "the provided packet cannot be parsed because \
+             its version is unknown"
+        );
+        assert_eq!(
+            Error::InvalidFrame.to_string(),
+            "the provided packet cannot be parsed because \
+             it contains an invalid frame"
+        );
+        assert_eq!(
+            Error::InvalidPacket.to_string(),
+            "the provided packet cannot be parsed"
+        );
+        assert_eq!(
+            Error::InvalidState.to_string(),
+            "the operation cannot be completed because the \
+             connection is in an invalid state"
+        );
+        assert_eq!(
+            Error::InvalidStreamState(4).to_string(),
+            "stream 4 is in an invalid state"
+        );
+        assert_eq!(
+            Error::InvalidTransportParam.to_string(),
+            "the peer's transport params cannot be parsed"
+        );
+        assert_eq!(
+            Error::CryptoFail.to_string(),
+            "a cryptographic operation failed"
+        );
+        assert_eq!(
+            Error::TlsFail.to_string(),
+            "the TLS handshake failed"
+        );
+        assert_eq!(
+            Error::FlowControl.to_string(),
+            "the peer violated the local flow control limits"
+        );
+        assert_eq!(
+            Error::StreamLimit.to_string(),
+            "the peer violated the local stream limits"
+        );
+        assert_eq!(
+            Error::StreamStopped(42).to_string(),
+            "the stream was stopped by the peer \
+             (error code 42)"
+        );
+        assert_eq!(
+            Error::StreamReset(42).to_string(),
+            "the stream was reset by the peer \
+             (error code 42)"
+        );
+        assert_eq!(
+            Error::FinalSize.to_string(),
+            "the received data exceeds the stream's final size"
+        );
+        assert_eq!(
+            Error::CongestionControl.to_string(),
+            "error in congestion control"
+        );
+        assert_eq!(
+            Error::IdLimit.to_string(),
+            "too many identifiers were provided"
+        );
+        assert_eq!(
+            Error::OutOfIdentifiers.to_string(),
+            "not enough available identifiers"
+        );
+        assert_eq!(
+            Error::KeyUpdate.to_string(),
+            "error in key update"
+        );
+        assert_eq!(
+            Error::CryptoBufferExceeded.to_string(),
+            "the peer sent more data in CRYPTO frames than \
+             we can buffer"
+        );
+        assert_eq!(
+            Error::InvalidAckRange.to_string(),
+            "the peer sent an ACK frame with an invalid range"
+        );
+        assert_eq!(
+            Error::OptimisticAckDetected.to_string(),
+            "the peer sent an ACK for a skipped packet used \
+             for optimistic ACK mitigation"
+        );
+        assert_eq!(
+            Error::InvalidDcidInitialization.to_string(),
+            "an invalid DCID was used when connecting to a \
+             remote peer"
+        );
     }
 }
 
