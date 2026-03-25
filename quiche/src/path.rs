@@ -547,6 +547,22 @@ impl Path {
             None => self.recovery.max_datagram_size(),
         };
 
+        let (
+            pmtud_completed,
+            discovered_pmtu,
+            pmtud_probe_size,
+            pmtud_probe_failure_count,
+        ) = match &self.pmtud {
+            Some(pmtud) => (
+                pmtud.get_pmtu().is_some(),
+                pmtud.get_pmtu(),
+                Some(pmtud.get_probe_size()),
+                Some(pmtud.probe_failure_count()),
+            ),
+
+            None => (false, None, None, None),
+        };
+
         PathStats {
             local_addr: self.local_addr,
             peer_addr: self.peer_addr,
@@ -575,6 +591,10 @@ impl Path {
                 .max_bandwidth()
                 .map(Bandwidth::to_bytes_per_second),
             startup_exit: self.recovery.startup_exit(),
+            pmtud_completed,
+            discovered_pmtu,
+            pmtud_probe_size,
+            pmtud_probe_failure_count,
         }
     }
 
@@ -1013,6 +1033,19 @@ pub struct PathStats {
 
     /// Statistics from when a CCA first exited the startup phase.
     pub startup_exit: Option<StartupExit>,
+
+    /// Whether PMTUD has completed and found a PMTU.
+    pub pmtud_completed: bool,
+
+    /// The discovered PMTU value, if PMTUD has completed.
+    pub discovered_pmtu: Option<usize>,
+
+    /// The current PMTUD probe size. None if PMTUD is disabled.
+    pub pmtud_probe_size: Option<usize>,
+
+    /// The current PMTUD probe failure count. None if PMTUD is
+    /// disabled.
+    pub pmtud_probe_failure_count: Option<u8>,
 }
 
 impl std::fmt::Debug for PathStats {
@@ -1044,6 +1077,19 @@ impl std::fmt::Debug for PathStats {
             f,
             " stream_retrans_bytes={} pmtu={} delivery_rate={}",
             self.stream_retrans_bytes, self.pmtu, self.delivery_rate,
+        )?;
+
+        write!(
+            f,
+            " pmtud_completed={} discovered_pmtu={:?}",
+            self.pmtud_completed, self.discovered_pmtu,
+        )?;
+
+        write!(
+            f,
+            " probe_size={:?} probe_failures={:?}",
+            self.pmtud_probe_size,
+            self.pmtud_probe_failure_count,
         )
     }
 }
@@ -1361,5 +1407,87 @@ mod tests {
         );
 
         // There will never be a response for fourth probe...
+    }
+
+    #[test]
+    fn path_stats_pmtud_disabled() {
+        let client_addr = "127.0.0.1:1234".parse().unwrap();
+        let server_addr = "127.0.0.1:4321".parse().unwrap();
+
+        let config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        let recovery_config = RecoveryConfig::from_config(&config);
+
+        let path = Path::new(
+            client_addr,
+            server_addr,
+            &recovery_config,
+            config.path_challenge_recv_max_queue_len,
+            true,
+            None, // No config => no PMTUD
+        );
+
+        let stats = path.stats();
+        assert!(!stats.pmtud_completed);
+        assert!(stats.discovered_pmtu.is_none());
+        assert!(stats.pmtud_probe_size.is_none());
+        assert!(stats.pmtud_probe_failure_count.is_none());
+    }
+
+    #[test]
+    fn path_stats_pmtud_mid_probing() {
+        let client_addr = "127.0.0.1:1234".parse().unwrap();
+        let server_addr = "127.0.0.1:4321".parse().unwrap();
+
+        let mut config =
+            Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config.discover_pmtu(true);
+        let recovery_config = RecoveryConfig::from_config(&config);
+
+        let path = Path::new(
+            client_addr,
+            server_addr,
+            &recovery_config,
+            config.path_challenge_recv_max_queue_len,
+            true,
+            Some(&config),
+        );
+
+        let stats = path.stats();
+        // PMTUD is enabled but hasn't completed yet
+        assert!(!stats.pmtud_completed);
+        assert!(stats.discovered_pmtu.is_none());
+        assert!(stats.pmtud_probe_size.is_some());
+        assert_eq!(stats.pmtud_probe_failure_count, Some(0));
+    }
+
+    #[test]
+    fn path_stats_pmtud_completed() {
+        let client_addr = "127.0.0.1:1234".parse().unwrap();
+        let server_addr = "127.0.0.1:4321".parse().unwrap();
+
+        let mut config =
+            Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config.discover_pmtu(true);
+        let recovery_config = RecoveryConfig::from_config(&config);
+
+        let mut path = Path::new(
+            client_addr,
+            server_addr,
+            &recovery_config,
+            config.path_challenge_recv_max_queue_len,
+            true,
+            Some(&config),
+        );
+
+        // Simulate a successful probe to complete PMTUD
+        let probe_size =
+            path.pmtud.as_ref().unwrap().get_probe_size();
+        path.pmtud.as_mut().unwrap().successful_probe(probe_size);
+
+        let stats = path.stats();
+        assert!(stats.pmtud_completed);
+        assert!(stats.discovered_pmtu.is_some());
+        assert!(stats.pmtud_probe_size.is_some());
+        assert_eq!(stats.pmtud_probe_failure_count, Some(0));
     }
 }
