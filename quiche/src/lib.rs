@@ -8652,12 +8652,32 @@ impl<F: BufFactory> Connection<F> {
                     return Err(Error::InvalidState);
                 }
 
-                // If recv queue is full, discard oldest
+                // If recv queue is full, discard oldest datagram(s) to make
+                // room. This covers both the count-based limit and the
+                // byte-size limit.
                 if self.dgram_recv_queue.is_full() {
                     self.dgram_recv_queue.pop();
                 }
 
-                self.dgram_recv_queue.push(data)?;
+                let max_bytes = self.dgram_recv_queue.max_byte_size();
+                if max_bytes > 0 {
+                    while self.dgram_recv_queue.byte_size() + data.len() >
+                        max_bytes
+                    {
+                        if self.dgram_recv_queue.pop().is_none() {
+                            break;
+                        }
+                    }
+                }
+
+                // After making room the push should not fail. If it still
+                // does (e.g. the single datagram exceeds the byte limit on
+                // its own), silently discard it rather than propagating
+                // Error::Done which would abort packet processing.
+                if self.dgram_recv_queue.push(data).is_err() {
+                    // Datagram is silently dropped; continue processing
+                    // remaining frames in the packet.
+                }
 
                 self.dgram_recv_count = self.dgram_recv_count.saturating_add(1);
 
