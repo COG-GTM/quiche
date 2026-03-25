@@ -236,6 +236,12 @@ impl Pmtud {
         }
     }
 
+    /// Returns the number of consecutive probe failures at the
+    /// current probe size.
+    pub fn probe_failure_count(&self) -> u8 {
+        self.probe_failure_count
+    }
+
     fn set_pmtu(&mut self, successful_probe_size: usize) {
         self.pmtu = Some(successful_probe_size);
         self.probe_size = successful_probe_size;
@@ -252,6 +258,16 @@ impl std::fmt::Debug for Pmtud {
             f,
             "failures={}/{} ",
             self.probe_failure_count, self.max_probes
+        )?;
+        write!(
+            f,
+            "largest_success={:?} ",
+            self.largest_successful_probe_size
+        )?;
+        write!(
+            f,
+            "smallest_failure={:?}",
+            self.smallest_failed_probe_size
         )?;
         Ok(())
     }
@@ -598,6 +614,39 @@ mod tests {
         pmtud.update_probe_size();
 
         assert_eq!(pmtud.probe_size, 1500);
+    }
+
+    #[test]
+    fn pmtud_debug_includes_search_state() {
+        let mut pmtud = Pmtud::new(1500, 3);
+        let debug = format!("{:?}", pmtud);
+        assert!(debug.contains("largest_success="));
+        assert!(debug.contains("smallest_failure="));
+
+        // Verify initial values appear
+        assert!(debug.contains("largest_success=None"));
+        assert!(debug.contains("smallest_failure=None"));
+
+        // After a successful probe, largest_success should update
+        pmtud.successful_probe(1500);
+        let debug = format!("{:?}", pmtud);
+        assert!(debug.contains("largest_success=Some(1500)"));
+    }
+
+    #[test]
+    fn pmtud_probe_failure_count_getter() {
+        let mut pmtud = Pmtud::new(1500, 3);
+        assert_eq!(pmtud.probe_failure_count(), 0);
+
+        pmtud.failed_probe(1500);
+        assert_eq!(pmtud.probe_failure_count(), 1);
+
+        pmtud.failed_probe(1500);
+        assert_eq!(pmtud.probe_failure_count(), 2);
+
+        // After max_probes failures, counter resets
+        pmtud.failed_probe(1500);
+        assert_eq!(pmtud.probe_failure_count(), 0);
     }
 
     // Test utilities
