@@ -115,7 +115,9 @@ impl DatagramQueue {
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == self.queue_max_len
+        self.len() == self.queue_max_len ||
+            (self.max_queue_bytes_size > 0 &&
+                self.queue_bytes_size >= self.max_queue_bytes_size)
     }
 
     pub fn is_empty(&self) -> bool {
