@@ -8677,12 +8677,12 @@ impl<F: BufFactory> Connection<F> {
                 if self.dgram_recv_queue.push(data).is_err() {
                     // Datagram is silently dropped; continue processing
                     // remaining frames in the packet.
+                } else {
+                    self.dgram_recv_count = self.dgram_recv_count.saturating_add(1);
+
+                    let path = self.paths.get_mut(recv_path_id)?;
+                    path.dgram_recv_count = path.dgram_recv_count.saturating_add(1);
                 }
-
-                self.dgram_recv_count = self.dgram_recv_count.saturating_add(1);
-
-                let path = self.paths.get_mut(recv_path_id)?;
-                path.dgram_recv_count = path.dgram_recv_count.saturating_add(1);
             },
 
             frame::Frame::DatagramHeader { .. } => unreachable!(),
