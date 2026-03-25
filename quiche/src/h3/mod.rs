@@ -537,13 +537,95 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Error::Done =>
+                write!(f, "there is no error or no work to do"),
+            Error::BufferTooShort =>
+                write!(f, "the provided buffer is too short"),
+            Error::InternalError =>
+                write!(f, "internal error in the HTTP/3 stack"),
+            Error::ExcessiveLoad => write!(
+                f,
+                "the peer is exhibiting behavior that causes \
+                 excessive load"
+            ),
+            Error::IdError => write!(
+                f,
+                "a stream ID or push ID was used incorrectly"
+            ),
+            Error::StreamCreationError => write!(
+                f,
+                "the peer created a stream that will not be \
+                 accepted"
+            ),
+            Error::ClosedCriticalStream => write!(
+                f,
+                "a required critical stream was closed"
+            ),
+            Error::MissingSettings => write!(
+                f,
+                "no SETTINGS frame at beginning of control \
+                 stream"
+            ),
+            Error::FrameUnexpected => write!(
+                f,
+                "a frame was received which is not permitted \
+                 in the current state"
+            ),
+            Error::FrameError =>
+                write!(f, "frame violated layout or size rules"),
+            Error::QpackDecompressionFailed => write!(
+                f,
+                "QPACK header block decompression failure"
+            ),
+            Error::TransportError(e) =>
+                write!(f, "transport error: {e}"),
+            Error::StreamBlocked => write!(
+                f,
+                "the underlying QUIC stream doesn't have enough \
+                 capacity"
+            ),
+            Error::SettingsError => write!(
+                f,
+                "error in the payload of a SETTINGS frame"
+            ),
+            Error::RequestRejected =>
+                write!(f, "server rejected request"),
+            Error::RequestCancelled => write!(
+                f,
+                "request or its response cancelled"
+            ),
+            Error::RequestIncomplete => write!(
+                f,
+                "client's request stream terminated without \
+                 containing a full-formed request"
+            ),
+            Error::MessageError => write!(
+                f,
+                "an HTTP message was malformed and cannot be \
+                 processed"
+            ),
+            Error::ConnectError => write!(
+                f,
+                "the TCP connection established in response to \
+                 a CONNECT request was reset or abnormally \
+                 closed"
+            ),
+            Error::VersionFallback => write!(
+                f,
+                "the requested operation cannot be served over \
+                 HTTP/3, peer should retry over HTTP/1.1"
+            ),
+        }
     }
 }
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
+        match self {
+            Error::TransportError(e) => Some(e),
+            _ => None,
+        }
     }
 }
 
@@ -3535,6 +3617,111 @@ mod tests {
     use super::*;
 
     use super::testing::*;
+
+    #[test]
+    fn error_display() {
+        assert_eq!(
+            Error::Done.to_string(),
+            "there is no error or no work to do"
+        );
+        assert_eq!(
+            Error::BufferTooShort.to_string(),
+            "the provided buffer is too short"
+        );
+        assert_eq!(
+            Error::InternalError.to_string(),
+            "internal error in the HTTP/3 stack"
+        );
+        assert_eq!(
+            Error::ExcessiveLoad.to_string(),
+            "the peer is exhibiting behavior that causes \
+             excessive load"
+        );
+        assert_eq!(
+            Error::IdError.to_string(),
+            "a stream ID or push ID was used incorrectly"
+        );
+        assert_eq!(
+            Error::StreamCreationError.to_string(),
+            "the peer created a stream that will not be \
+             accepted"
+        );
+        assert_eq!(
+            Error::ClosedCriticalStream.to_string(),
+            "a required critical stream was closed"
+        );
+        assert_eq!(
+            Error::MissingSettings.to_string(),
+            "no SETTINGS frame at beginning of control \
+             stream"
+        );
+        assert_eq!(
+            Error::FrameUnexpected.to_string(),
+            "a frame was received which is not permitted \
+             in the current state"
+        );
+        assert_eq!(
+            Error::FrameError.to_string(),
+            "frame violated layout or size rules"
+        );
+        assert_eq!(
+            Error::QpackDecompressionFailed.to_string(),
+            "QPACK header block decompression failure"
+        );
+        assert_eq!(
+            Error::TransportError(crate::Error::TlsFail).to_string(),
+            "transport error: the TLS handshake failed"
+        );
+        assert_eq!(
+            Error::StreamBlocked.to_string(),
+            "the underlying QUIC stream doesn't have enough \
+             capacity"
+        );
+        assert_eq!(
+            Error::SettingsError.to_string(),
+            "error in the payload of a SETTINGS frame"
+        );
+        assert_eq!(
+            Error::RequestRejected.to_string(),
+            "server rejected request"
+        );
+        assert_eq!(
+            Error::RequestCancelled.to_string(),
+            "request or its response cancelled"
+        );
+        assert_eq!(
+            Error::RequestIncomplete.to_string(),
+            "client's request stream terminated without \
+             containing a full-formed request"
+        );
+        assert_eq!(
+            Error::MessageError.to_string(),
+            "an HTTP message was malformed and cannot be \
+             processed"
+        );
+        assert_eq!(
+            Error::ConnectError.to_string(),
+            "the TCP connection established in response to \
+             a CONNECT request was reset or abnormally \
+             closed"
+        );
+        assert_eq!(
+            Error::VersionFallback.to_string(),
+            "the requested operation cannot be served over \
+             HTTP/3, peer should retry over HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn error_source() {
+        use std::error::Error as StdError;
+
+        let err =
+            Error::TransportError(crate::Error::TlsFail);
+        assert!(err.source().is_some());
+
+        assert!(Error::Done.source().is_none());
+    }
 
     #[test]
     /// Make sure that random GREASE values is within the specified limit.

@@ -63,7 +63,30 @@ pub enum Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Error::BufferTooShort =>
+                write!(f, "the provided buffer is too short"),
+            Error::InvalidHuffmanEncoding => write!(
+                f,
+                "the QPACK header block's huffman encoding \
+                 is invalid"
+            ),
+            Error::InvalidStaticTableIndex => write!(
+                f,
+                "the QPACK static table index provided \
+                 doesn't exist"
+            ),
+            Error::InvalidHeaderValue => write!(
+                f,
+                "the decoded QPACK header name or value is \
+                 not valid"
+            ),
+            Error::HeaderListTooLarge => write!(
+                f,
+                "the decoded header list exceeded the size \
+                 limit"
+            ),
+        }
     }
 }
 
@@ -84,6 +107,36 @@ mod tests {
     use crate::*;
 
     use super::*;
+
+    #[test]
+    fn error_display() {
+        use super::Error as QpackError;
+
+        assert_eq!(
+            QpackError::BufferTooShort.to_string(),
+            "the provided buffer is too short"
+        );
+        assert_eq!(
+            QpackError::InvalidHuffmanEncoding.to_string(),
+            "the QPACK header block's huffman encoding \
+             is invalid"
+        );
+        assert_eq!(
+            QpackError::InvalidStaticTableIndex.to_string(),
+            "the QPACK static table index provided \
+             doesn't exist"
+        );
+        assert_eq!(
+            QpackError::InvalidHeaderValue.to_string(),
+            "the decoded QPACK header name or value is \
+             not valid"
+        );
+        assert_eq!(
+            QpackError::HeaderListTooLarge.to_string(),
+            "the decoded header list exceeded the size \
+             limit"
+        );
+    }
 
     #[test]
     fn encode_decode() {
