@@ -386,6 +386,13 @@ pub extern "C" fn quiche_config_enable_dgram(
 }
 
 #[no_mangle]
+pub extern "C" fn quiche_config_set_dgram_queue_max_bytes(
+    config: &mut Config, v: size_t,
+) {
+    config.set_dgram_queue_max_bytes(v);
+}
+
+#[no_mangle]
 pub extern "C" fn quiche_config_set_max_send_udp_payload_size(
     config: &mut Config, v: size_t,
 ) {
