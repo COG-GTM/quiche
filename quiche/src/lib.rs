@@ -590,6 +590,7 @@ pub struct Config {
 
     dgram_recv_max_queue_len: usize,
     dgram_send_max_queue_len: usize,
+    dgram_queue_max_bytes: usize,
 
     path_challenge_recv_max_queue_len: usize,
 
@@ -668,6 +669,7 @@ impl Config {
 
             dgram_recv_max_queue_len: DEFAULT_MAX_DGRAM_QUEUE_LEN,
             dgram_send_max_queue_len: DEFAULT_MAX_DGRAM_QUEUE_LEN,
+            dgram_queue_max_bytes: 0,
 
             path_challenge_recv_max_queue_len:
                 DEFAULT_MAX_PATH_CHALLENGE_RX_QUEUE_LEN,
@@ -1183,6 +1185,17 @@ impl Config {
         };
         self.dgram_recv_max_queue_len = recv_queue_len;
         self.dgram_send_max_queue_len = send_queue_len;
+    }
+
+    /// Sets the maximum total byte size of the DATAGRAM queues.
+    ///
+    /// When the limit is non-zero, pushing a datagram that would
+    /// cause the queue's total byte size to exceed this value is
+    /// rejected with [`Error::Done`].
+    ///
+    /// The default value is `0`, which means unlimited.
+    pub fn set_dgram_queue_max_bytes(&mut self, v: usize) {
+        self.dgram_queue_max_bytes = v;
     }
 
     /// Configures the max number of queued received PATH_CHALLENGE frames.
@@ -2177,10 +2190,12 @@ impl<F: BufFactory> Connection<F> {
 
             dgram_recv_queue: dgram::DatagramQueue::new(
                 config.dgram_recv_max_queue_len,
+                config.dgram_queue_max_bytes,
             ),
 
             dgram_send_queue: dgram::DatagramQueue::new(
                 config.dgram_send_max_queue_len,
+                config.dgram_queue_max_bytes,
             ),
 
             emit_dgram: true,
@@ -6635,6 +6650,44 @@ impl<F: BufFactory> Connection<F> {
         self.dgram_recv_queue.is_full()
     }
 
+    /// Returns the number of datagrams dropped from the send queue.
+    #[inline]
+    pub fn dgram_send_queue_dropped_count(&self) -> usize {
+        self.dgram_send_queue.dropped_count()
+    }
+
+    /// Returns the number of datagrams dropped from the recv queue.
+    #[inline]
+    pub fn dgram_recv_queue_dropped_count(&self) -> usize {
+        self.dgram_recv_queue.dropped_count()
+    }
+
+    /// Returns the configured capacity of the DATAGRAM send queue.
+    #[inline]
+    pub fn dgram_send_queue_capacity(&self) -> usize {
+        self.dgram_send_queue.capacity()
+    }
+
+    /// Returns the configured capacity of the DATAGRAM recv queue.
+    #[inline]
+    pub fn dgram_recv_queue_capacity(&self) -> usize {
+        self.dgram_recv_queue.capacity()
+    }
+
+    /// Returns the configured max byte size of the DATAGRAM send
+    /// queue. A value of 0 means unlimited.
+    #[inline]
+    pub fn dgram_send_queue_max_byte_size(&self) -> usize {
+        self.dgram_send_queue.max_byte_size()
+    }
+
+    /// Returns the configured max byte size of the DATAGRAM recv
+    /// queue. A value of 0 means unlimited.
+    #[inline]
+    pub fn dgram_recv_queue_max_byte_size(&self) -> usize {
+        self.dgram_recv_queue.max_byte_size()
+    }
+
     /// Sends data in a DATAGRAM frame.
     ///
     /// [`Done`] is returned if no data was written.
@@ -8599,17 +8652,37 @@ impl<F: BufFactory> Connection<F> {
                     return Err(Error::InvalidState);
                 }
 
-                // If recv queue is full, discard oldest
+                // If recv queue is full, discard oldest datagram(s) to make
+                // room. This covers both the count-based limit and the
+                // byte-size limit.
                 if self.dgram_recv_queue.is_full() {
                     self.dgram_recv_queue.pop();
                 }
 
-                self.dgram_recv_queue.push(data)?;
+                let max_bytes = self.dgram_recv_queue.max_byte_size();
+                if max_bytes > 0 {
+                    while self.dgram_recv_queue.byte_size() + data.len() >
+                        max_bytes
+                    {
+                        if self.dgram_recv_queue.pop().is_none() {
+                            break;
+                        }
+                    }
+                }
 
-                self.dgram_recv_count = self.dgram_recv_count.saturating_add(1);
+                // After making room the push should not fail. If it still
+                // does (e.g. the single datagram exceeds the byte limit on
+                // its own), silently discard it rather than propagating
+                // Error::Done which would abort packet processing.
+                if self.dgram_recv_queue.push(data).is_err() {
+                    // Datagram is silently dropped; continue processing
+                    // remaining frames in the packet.
+                } else {
+                    self.dgram_recv_count = self.dgram_recv_count.saturating_add(1);
 
-                let path = self.paths.get_mut(recv_path_id)?;
-                path.dgram_recv_count = path.dgram_recv_count.saturating_add(1);
+                    let path = self.paths.get_mut(recv_path_id)?;
+                    path.dgram_recv_count = path.dgram_recv_count.saturating_add(1);
+                }
             },
 
             frame::Frame::DatagramHeader { .. } => unreachable!(),

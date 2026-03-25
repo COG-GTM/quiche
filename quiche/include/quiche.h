@@ -261,6 +261,9 @@ void quiche_config_enable_dgram(quiche_config *config, bool enabled,
                                 size_t recv_queue_len,
                                 size_t send_queue_len);
 
+// Sets the maximum total byte size of the DATAGRAM queues.
+void quiche_config_set_dgram_queue_max_bytes(quiche_config *config, size_t v);
+
 // Sets the maximum connection window.
 void quiche_config_set_max_connection_window(quiche_config *config, uint64_t v);
 

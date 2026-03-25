@@ -35,19 +35,34 @@ pub struct DatagramQueue {
     queue: Option<VecDeque<Vec<u8>>>,
     queue_max_len: usize,
     queue_bytes_size: usize,
+    max_queue_bytes_size: usize,
+    dropped_count: usize,
 }
 
 impl DatagramQueue {
-    pub fn new(queue_max_len: usize) -> Self {
+    pub fn new(
+        queue_max_len: usize, max_queue_bytes_size: usize,
+    ) -> Self {
         DatagramQueue {
             queue: None,
             queue_bytes_size: 0,
             queue_max_len,
+            max_queue_bytes_size,
+            dropped_count: 0,
         }
     }
 
     pub fn push(&mut self, data: Vec<u8>) -> Result<()> {
         if self.is_full() {
+            self.dropped_count += 1;
+            return Err(Error::Done);
+        }
+
+        if self.max_queue_bytes_size > 0 &&
+            self.queue_bytes_size + data.len() >
+                self.max_queue_bytes_size
+        {
+            self.dropped_count += 1;
             return Err(Error::Done);
         }
 
@@ -100,7 +115,9 @@ impl DatagramQueue {
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == self.queue_max_len
+        self.len() == self.queue_max_len ||
+            (self.max_queue_bytes_size > 0 &&
+                self.queue_bytes_size >= self.max_queue_bytes_size)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,5 +130,119 @@ impl DatagramQueue {
 
     pub fn byte_size(&self) -> usize {
         self.queue_bytes_size
+    }
+
+    /// Returns the number of datagrams that were rejected by
+    /// [`push()`].
+    pub fn dropped_count(&self) -> usize {
+        self.dropped_count
+    }
+
+    /// Returns the configured maximum number of items in the
+    /// queue.
+    pub fn capacity(&self) -> usize {
+        self.queue_max_len
+    }
+
+    /// Returns the configured maximum byte size of the queue.
+    /// A value of 0 means unlimited.
+    pub fn max_byte_size(&self) -> usize {
+        self.max_queue_bytes_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_up_to_byte_limit() {
+        let mut q = DatagramQueue::new(10, 100);
+        // Each datagram is 30 bytes; 3 fit (90 <= 100).
+        assert!(q.push(vec![0u8; 30]).is_ok());
+        assert!(q.push(vec![0u8; 30]).is_ok());
+        assert!(q.push(vec![0u8; 30]).is_ok());
+        // 4th would be 120 > 100 → rejected.
+        assert_eq!(q.push(vec![0u8; 30]), Err(Error::Done));
+        assert_eq!(q.byte_size(), 90);
+    }
+
+    #[test]
+    fn dropped_count_increments_on_reject() {
+        let mut q = DatagramQueue::new(2, 0);
+        assert!(q.push(vec![1]).is_ok());
+        assert!(q.push(vec![2]).is_ok());
+        assert_eq!(q.dropped_count(), 0);
+        // Count-based reject.
+        assert_eq!(q.push(vec![3]), Err(Error::Done));
+        assert_eq!(q.dropped_count(), 1);
+        assert_eq!(q.push(vec![4]), Err(Error::Done));
+        assert_eq!(q.dropped_count(), 2);
+    }
+
+    #[test]
+    fn dropped_count_increments_on_byte_overflow() {
+        let mut q = DatagramQueue::new(10, 5);
+        assert!(q.push(vec![0u8; 3]).is_ok());
+        // 3 + 4 = 7 > 5 → rejected.
+        assert_eq!(q.push(vec![0u8; 4]), Err(Error::Done));
+        assert_eq!(q.dropped_count(), 1);
+    }
+
+    #[test]
+    fn capacity_returns_max_len() {
+        let q = DatagramQueue::new(42, 0);
+        assert_eq!(q.capacity(), 42);
+    }
+
+    #[test]
+    fn max_byte_size_returns_configured_value() {
+        let q = DatagramQueue::new(10, 256);
+        assert_eq!(q.max_byte_size(), 256);
+    }
+
+    #[test]
+    fn zero_byte_limit_allows_unlimited_bytes() {
+        let mut q = DatagramQueue::new(1000, 0);
+        for _ in 0..1000 {
+            assert!(q.push(vec![0u8; 1000]).is_ok());
+        }
+        assert_eq!(q.byte_size(), 1_000_000);
+        assert_eq!(q.dropped_count(), 0);
+    }
+
+    #[test]
+    fn pop_adjusts_bytes_and_allows_new_pushes() {
+        let mut q = DatagramQueue::new(10, 50);
+        assert!(q.push(vec![0u8; 30]).is_ok());
+        assert!(q.push(vec![0u8; 20]).is_ok());
+        assert_eq!(q.byte_size(), 50);
+        // Full on bytes; next push rejected.
+        assert_eq!(q.push(vec![0u8; 1]), Err(Error::Done));
+        // Pop one (30 bytes) → frees space.
+        let popped = q.pop().unwrap();
+        assert_eq!(popped.len(), 30);
+        assert_eq!(q.byte_size(), 20);
+        // Now a 25-byte datagram fits (20 + 25 = 45 <= 50).
+        assert!(q.push(vec![0u8; 25]).is_ok());
+        assert_eq!(q.byte_size(), 45);
+    }
+
+    #[test]
+    fn count_limit_and_byte_limit_both_enforced() {
+        // count limit = 2, byte limit = 100
+        let mut q = DatagramQueue::new(2, 100);
+        assert!(q.push(vec![0u8; 10]).is_ok());
+        assert!(q.push(vec![0u8; 10]).is_ok());
+        // Hits count limit even though bytes are fine.
+        assert_eq!(q.push(vec![0u8; 10]), Err(Error::Done));
+        assert_eq!(q.dropped_count(), 1);
+
+        // count limit = 100, byte limit = 20
+        let mut q2 = DatagramQueue::new(100, 20);
+        assert!(q2.push(vec![0u8; 15]).is_ok());
+        // Hits byte limit even though count is fine.
+        assert_eq!(q2.push(vec![0u8; 10]), Err(Error::Done));
+        assert_eq!(q2.dropped_count(), 1);
     }
 }
