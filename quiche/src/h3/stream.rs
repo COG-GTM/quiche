@@ -38,6 +38,9 @@ pub const QPACK_DECODER_STREAM_TYPE_ID: u64 = 0x3;
 
 const MAX_STATE_BUF_SIZE: usize = (1 << 24) - 1;
 
+// Bound allocations before payload bytes actually arrive.
+const STATE_BUF_GROWTH_CHUNK: usize = 4096;
+
 // Allow for Huffman encoding to inflate the size of encoded headers.
 const HUFFMAN_FRAME_SIZE_MARGIN_FACTOR: f64 = 1.5;
 
@@ -517,51 +520,71 @@ impl Stream {
             return Ok(());
         }
 
-        let buf = &mut self.state_buf[self.state_off..self.state_len];
+        loop {
+            let window = std::cmp::min(
+                self.state_len,
+                std::cmp::max(
+                    STATE_BUF_GROWTH_CHUNK,
+                    self.state_buf.len().saturating_mul(2),
+                ),
+            );
 
-        let read = match conn.stream_recv(self.id, buf) {
-            Ok((len, fin)) => {
-                if self.critical_stream_closed(fin) {
-                    super::close_conn_critical_stream(conn)?;
-                }
+            if self.state_buf.len() < window {
+                self.state_buf.resize(window, 0);
+            }
 
-                len
-            },
+            let window = std::cmp::min(self.state_len, self.state_buf.len());
 
-            Err(e @ crate::Error::StreamReset(_)) => {
-                if self.critical_stream_closed(true) {
-                    super::close_conn_critical_stream(conn)?;
-                }
+            let read = match conn.stream_recv(
+                self.id,
+                &mut self.state_buf[self.state_off..window],
+            ) {
+                Ok((len, fin)) => {
+                    if self.critical_stream_closed(fin) {
+                        super::close_conn_critical_stream(conn)?;
+                    }
 
-                return Err(e.into());
-            },
+                    len
+                },
 
-            Err(e) => {
-                // The stream is not readable anymore, so re-arm the Data event.
-                if e == crate::Error::Done {
-                    self.reset_data_event();
-                }
+                Err(e @ crate::Error::StreamReset(_)) => {
+                    if self.critical_stream_closed(true) {
+                        super::close_conn_critical_stream(conn)?;
+                    }
 
-                return Err(e.into());
-            },
-        };
+                    return Err(e.into());
+                },
 
-        trace!(
-            "{} read {} bytes on stream {}",
-            conn.trace_id(),
-            read,
-            self.id,
-        );
+                Err(e) => {
+                    // The stream is not readable anymore, so re-arm the Data event.
+                    if e == crate::Error::Done {
+                        self.reset_data_event();
+                    }
 
-        self.state_off += read;
+                    return Err(e.into());
+                },
+            };
 
-        if !self.state_buffer_complete() {
-            self.reset_data_event();
+            trace!(
+                "{} read {} bytes on stream {}",
+                conn.trace_id(),
+                read,
+                self.id,
+            );
 
-            return Err(Error::Done);
+            self.state_off += read;
+
+            if self.state_buffer_complete() {
+                return Ok(());
+            }
+
+            if read == 0 {
+                break;
+            }
         }
 
-        Ok(())
+        self.reset_data_event();
+        Err(Error::Done)
     }
 
     /// Tries to read data from the corresponding transport stream up to the
@@ -665,17 +688,38 @@ impl Stream {
             return Ok(());
         }
 
-        let buf = &mut self.state_buf[self.state_off..self.state_len];
+        loop {
+            let window = std::cmp::min(
+                self.state_len,
+                std::cmp::max(
+                    STATE_BUF_GROWTH_CHUNK,
+                    self.state_buf.len().saturating_mul(2),
+                ),
+            );
 
-        let read = std::io::Read::read(stream, buf).unwrap();
+            if self.state_buf.len() < window {
+                self.state_buf.resize(window, 0);
+            }
 
-        self.state_off += read;
+            let window = std::cmp::min(self.state_len, self.state_buf.len());
+            let read = std::io::Read::read(
+                stream,
+                &mut self.state_buf[self.state_off..window],
+            )
+            .unwrap();
 
-        if !self.state_buffer_complete() {
-            return Err(Error::Done);
+            self.state_off += read;
+
+            if self.state_buffer_complete() {
+                return Ok(());
+            }
+
+            if read == 0 {
+                break;
+            }
         }
 
-        Ok(())
+        Err(Error::Done)
     }
 
     /// Tries to parse a varint (including length) from the state buffer.
@@ -857,7 +901,10 @@ impl Stream {
                 return Err(Error::ExcessiveLoad);
             }
 
-            self.state_buf.resize(expected_len, 0);
+            self.state_buf.resize(
+                std::cmp::min(expected_len, STATE_BUF_GROWTH_CHUNK),
+                0,
+            );
         }
 
         self.state = new_state;
@@ -1618,6 +1665,40 @@ mod tests {
             stream.set_frame_payload_len(frame_payload_len),
             Err(Error::ExcessiveLoad)
         );
+    }
+
+    #[test]
+    fn headers_payload_len_does_not_preallocate() {
+        let mut stream = Stream::new(0, false, None);
+
+        let mut d = vec![0; 5];
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+        b.put_varint(HEADERS_FRAME_TYPE_ID).unwrap();
+        b.put_varint(MAX_STATE_BUF_SIZE as u64).unwrap();
+
+        let mut cursor = std::io::Cursor::new(d);
+
+        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = stream.try_consume_varint().unwrap();
+        stream.set_frame_type(frame_ty).unwrap();
+
+        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        assert_eq!(stream.try_consume_varint(), Err(Error::Done));
+        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len = stream.try_consume_varint().unwrap();
+        assert_eq!(frame_payload_len, MAX_STATE_BUF_SIZE as u64);
+        stream.set_frame_payload_len(frame_payload_len).unwrap();
+
+        assert_eq!(stream.state_len, MAX_STATE_BUF_SIZE);
+        assert!(stream.state_buf.len() <= STATE_BUF_GROWTH_CHUNK);
+
+        let mut payload = std::io::Cursor::new(vec![0; 8]);
+        assert_eq!(
+            stream.try_fill_buffer_for_tests(&mut payload),
+            Err(Error::Done)
+        );
+        assert_eq!(stream.state_off, 8);
+        assert!(stream.state_buf.len() <= STATE_BUF_GROWTH_CHUNK * 2);
     }
 
     #[test]
