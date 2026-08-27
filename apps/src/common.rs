@@ -1094,11 +1094,26 @@ impl Http3Conn {
             "GET" => {
                 const STREAM_BYTES_PREFIX: &str = "/stream-bytes/";
                 const STREAM_BYTES_FILL: u8 = 0x57;
+                // Upper bound on the body size a client can ask for, so that
+                // the requested value can't be used to exhaust memory.
+                const MAX_STREAM_BYTES: usize = 1024 * 1024;
 
                 if let Some(suffix) = url.path().strip_prefix(STREAM_BYTES_PREFIX)
                 {
-                    let n = suffix.parse::<usize>().unwrap_or(0);
-                    (200, vec![STREAM_BYTES_FILL; n])
+                    match suffix.parse::<usize>() {
+                        Ok(n) if n <= MAX_STREAM_BYTES =>
+                            (200, vec![STREAM_BYTES_FILL; n]),
+
+                        Ok(_) => (
+                            400,
+                            format!(
+                                "Requested size exceeds {MAX_STREAM_BYTES} bytes!"
+                            )
+                            .into_bytes(),
+                        ),
+
+                        Err(_) => (200, Vec::new()),
+                    }
                 } else {
                     for c in pathbuf.components() {
                         if let path::Component::Normal(v) = c {
@@ -1127,6 +1142,57 @@ impl Http3Conn {
         ];
 
         Ok((headers, body, priority))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn build_response(path: &str) -> (Vec<quiche::h3::Header>, Vec<u8>) {
+        let request = vec![
+            quiche::h3::Header::new(b":method", b"GET"),
+            quiche::h3::Header::new(b":scheme", b"https"),
+            quiche::h3::Header::new(b":authority", b"test.com"),
+            quiche::h3::Header::new(b":path", path.as_bytes()),
+        ];
+
+        let (headers, body, _) =
+            super::Http3Conn::build_h3_response(".", "", &request).unwrap();
+
+        (headers, body)
+    }
+
+    fn response_status(headers: &[quiche::h3::Header]) -> u16 {
+        std::str::from_utf8(
+            headers
+                .iter()
+                .find(|header| header.name() == b":status")
+                .unwrap()
+                .value(),
+        )
+        .unwrap()
+        .parse()
+        .unwrap()
+    }
+
+    #[test]
+    fn stream_bytes_response_limits_body_size() {
+        let (headers, body) = build_response("/stream-bytes/100");
+        assert_eq!(response_status(&headers), 200);
+        assert_eq!(body.len(), 100);
+
+        let (headers, body) = build_response("/stream-bytes/1048576");
+        assert_eq!(response_status(&headers), 200);
+        assert_eq!(body.len(), 1048576);
+
+        for path in ["/stream-bytes/1048577", "/stream-bytes/500000000000"] {
+            let (headers, body) = build_response(path);
+            assert_eq!(response_status(&headers), 400);
+            assert!(body.len() < 1024);
+        }
+
+        let (headers, body) = build_response("/stream-bytes/abc");
+        assert_eq!(response_status(&headers), 200);
+        assert_eq!(body.len(), 0);
     }
 }
 
