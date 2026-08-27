@@ -1121,8 +1121,14 @@ impl Connection {
 
         let stream_id = self.next_request_stream_id;
 
-        self.streams
-            .insert(stream_id, <stream::Stream>::new(stream_id, true));
+        self.streams.insert(
+            stream_id,
+            <stream::Stream>::new(
+                stream_id,
+                true,
+                self.local_settings.max_field_section_size,
+            ),
+        );
 
         // The underlying QUIC stream does not exist yet, so calls to e.g.
         // stream_capacity() will fail. By writing a 0-length buffer, we force
@@ -2472,9 +2478,13 @@ impl Connection {
     fn process_readable_stream<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>, stream_id: u64, polling: bool,
     ) -> Result<(u64, Event)> {
-        self.streams
-            .entry(stream_id)
-            .or_insert_with(|| <stream::Stream>::new(stream_id, false));
+        self.streams.entry(stream_id).or_insert_with(|| {
+            <stream::Stream>::new(
+                stream_id,
+                false,
+                self.local_settings.max_field_section_size,
+            )
+        });
 
         // We need to get a fresh reference to the stream for each
         // iteration, to avoid borrowing `self` for the entire duration
@@ -2692,7 +2702,9 @@ impl Connection {
                         });
                     }
 
-                    if let Err(e) = stream.set_frame_payload_len(payload_len) {
+                    let res = stream.set_frame_payload_len(payload_len);
+
+                    if let Err(e) = res {
                         conn.close(true, e.to_wire(), b"")?;
                         return Err(e);
                     }
@@ -2738,6 +2750,16 @@ impl Connection {
 
                         Err(e) => return Err(e),
                     };
+                },
+
+                stream::State::SkipFramePayload => {
+                    stream.try_skip_frame(conn)?;
+
+                    // Check whether the frame has FIN'd by QUIC to prevent
+                    // trying to read again on a closed stream.
+                    if conn.stream_finished(stream_id) {
+                        break;
+                    }
                 },
 
                 stream::State::Data => {
@@ -3086,10 +3108,16 @@ impl Connection {
                 }
 
                 // If the stream did not yet exist, create it and store.
-                let stream =
-                    self.streams.entry(prioritized_element_id).or_insert_with(
-                        || <stream::Stream>::new(prioritized_element_id, false),
-                    );
+                let stream = self
+                    .streams
+                    .entry(prioritized_element_id)
+                    .or_insert_with(|| {
+                        <stream::Stream>::new(
+                            prioritized_element_id,
+                            false,
+                            self.local_settings.max_field_section_size,
+                        )
+                    });
 
                 let had_priority_update = stream.has_last_priority_update();
                 stream.set_last_priority_update(Some(priority_field_value));
@@ -3974,7 +4002,7 @@ mod tests {
             more_frames: true,
         };
 
-        // Inject a GREASE frame
+        // Inject a GREASE frame.
         let mut d = [42; 10];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
@@ -5428,7 +5456,7 @@ mod tests {
 
         assert_eq!(s.server.poll(&mut s.pipe.server), Ok((0, Event::Data)));
 
-        // GREASE frames consume the state buffer, so need to be limited.
+        // GREASE frame payloads are discarded, but still need to be limited.
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
 
