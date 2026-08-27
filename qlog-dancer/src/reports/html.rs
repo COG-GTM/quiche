@@ -394,9 +394,36 @@ pub fn requests(log_file: &LogFileParseResult, config: &AppConfig) {
     .unwrap();
 }
 
+fn html_escape(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+
+    out
+}
+
 pub fn event_list_html_from_sqlog(events: &[qlog::reader::Event]) -> String {
     let table = sqlog_event_list(events);
-    let table = HtmlTable::with_header(Vec::<Vec<String>>::from(table));
+    let mut rows = Vec::<Vec<String>>::from(table);
+
+    // table_to_html does not perform any HTML-entity escaping, so every
+    // log-derived cell must be escaped before the table is rendered.
+    for row in &mut rows {
+        for cell in row.iter_mut() {
+            *cell = html_escape(cell);
+        }
+    }
+
+    let table = HtmlTable::with_header(rows);
     inject_table_id_class(
         &table,
         None,
@@ -569,6 +596,43 @@ impl HtmlVisitorMut for QUICClosureTableDecorator {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_escape_special_chars() {
+        assert_eq!(
+            html_escape("<img src=x onerror=alert(1)>"),
+            "&lt;img src=x onerror=alert(1)&gt;"
+        );
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+        assert_eq!(
+            html_escape("\"quoted\" 'single'"),
+            "&quot;quoted&quot; &#39;single&#39;"
+        );
+        assert_eq!(html_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn event_list_html_escapes_log_strings() {
+        let ev = qlog::events::JsonEvent {
+            time: 0.0,
+            importance: qlog::events::EventImportance::Core,
+            name: "http:custom".to_string(),
+            data: serde_json::json!({
+                "value": "<svg onload=alert(document.domain)>"
+            }),
+        };
+
+        let events = vec![qlog::reader::Event::Json(ev)];
+        let html = event_list_html_from_sqlog(&events);
+
+        assert!(!html.contains("<svg"));
+        assert!(html.contains("&lt;svg onload=alert(document.domain)&gt;"));
     }
 }
 
